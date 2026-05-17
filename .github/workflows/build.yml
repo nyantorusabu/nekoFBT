@@ -34,6 +34,12 @@ jobs:
             - name: Sync Capacitor
               run: npx cap sync android
 
+            - name: Fix UDP Plugin Namespace
+              run: |
+                  MANIFEST="node_modules/@frontall/capacitor-udp/android/src/main/AndroidManifest.xml"
+                  PKG=$(grep -o 'package="[^"]*"' $MANIFEST | cut -d'"' -f2)
+                  echo "android { namespace '$PKG' }" >> node_modules/@frontall/capacitor-udp/android/build.gradle
+
             - name: Build APK (Androidアプリの生成)
               working-directory: ./android
               run: |

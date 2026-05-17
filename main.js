@@ -59,7 +59,7 @@ mirrorCheckbox.addEventListener('change', (e) => {
 // --- 🌟 2. OSC変換＆送信ツール ---
 
 function createOscPositionPacket(trackerId, x, y, z) {
-	const address = `/vrc/trackers/${trackerId}/position`;
+	const address = `/tracking/trackers/${trackerId}/position`;
 	const types = ',fff';
 	const align = (len) => Math.ceil((len + 1) / 4) * 4;
 

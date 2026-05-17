@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ja">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>FBT Camera</title>
+		<style>
+			body {
+				margin: 0;
+				background-color: #1a1a1a;
+				color: #ffffff;
+				font-family: sans-serif;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+			}
+
+			/* ▼ 反転処理をかけやすくするためにコンテナを調整 */
+			.video-container {
+				position: relative;
+				width: 100%;
+				max-width: 600px;
+				aspect-ratio: 3 / 4;
+				background-color: #000;
+				margin-top: 16px;
+				transition: transform 0.2s;
+			}
+
+			video,
+			canvas {
+				position: absolute;
+				top: 0;
+				left: 0;
+				width: 100%;
+				height: 100%;
+				object-fit: cover;
+			}
+			.controls {
+				width: 100%;
+				max-width: 560px;
+				padding: 20px;
+				display: flex;
+				flex-direction: column;
+				gap: 16px;
+				box-sizing: border-box;
+			}
+			.control-group {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				font-size: 16px;
+			}
+
+			input[type='text'],
+			input[type='number'],
+			select {
+				width: 140px;
+				padding: 8px;
+				background: #333;
+				border: none;
+				color: white;
+				font-size: 16px;
+			}
+			input[type='range'] {
+				width: 140px;
+			}
+			.checkbox-group {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+
+			button {
+				padding: 16px;
+				font-size: 18px;
+				font-weight: bold;
+				background-color: #4caf50;
+				color: white;
+				border: none;
+				border-radius: 8px;
+				cursor: pointer;
+			}
+			button:disabled {
+				background-color: #555;
+			}
+		</style>
+	</head>
+	<body>
+		<!-- ここに反転(scaleX)をかける -->
+		<div class="video-container" id="videoContainer">
+			<video id="webcam" autoplay playsinline></video>
+			<canvas id="output_canvas"></canvas>
+		</div>
+
+		<div class="controls">
+			<button id="startButton">Camera Start</button>
+
+			<div class="control-group">
+				<label for="cameraSelect">Camera</label>
+				<select id="cameraSelect"></select>
+			</div>
+
+			<!-- ▼ ミラーリングのチェックボックスを追加 -->
+			<div class="control-group">
+				<label for="mirrorCheckbox">Mirror View</label>
+				<input type="checkbox" id="mirrorCheckbox" />
+			</div>
+
+			<div class="control-group">
+				<label for="modelSelect">AI Model</label>
+				<select id="modelSelect">
+					<option value="lite">Lite</option>
+					<option value="full" selected>Full</option>
+					<option value="heavy">Heavy</option>
+				</select>
+			</div>
+
+			<div class="control-group">
+				<label for="ipAddress">Target IP</label>
+				<input type="text" id="ipAddress" value="192.168.1.10" />
+			</div>
+
+			<!-- ▼ 空欄にすれば無制限になるようにプレースホルダーを設定 -->
+			<div class="control-group">
+				<label for="fpsLimit">FPS Limit (Empty=Max)</label>
+				<input
+					type="number"
+					id="fpsLimit"
+					value="30"
+					min="1"
+					max="120"
+					placeholder="Max"
+				/>
+			</div>
+
+			<div class="control-group">
+				<label for="smoothing">Smoothing</label>
+				<input
+					type="range"
+					id="smoothing"
+					value="50"
+					min="0"
+					max="100"
+				/>
+			</div>
+		</div>
+
+		<script type="module" src="/main.js"></script>
+	</body>
+</html>

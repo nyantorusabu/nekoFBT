@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">nekoFBT</string>
+    <string name="title_activity_main">nekoFBT</string>
+    <string name="package_name">com.nekovrc.fbt</string>
+    <string name="custom_url_scheme">com.nekovrc.fbt</string>
+</resources>

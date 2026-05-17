@@ -1,0 +1,44 @@
+name: Build Android APK
+
+# 手動で実行できるようにする設定
+on:
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+
+            - name: Setup Java (Androidビルド用)
+              uses: actions/setup-java@v4
+              with:
+                  distribution: 'zulu'
+                  java-version: '17'
+
+            - name: Install Dependencies
+              run: npm install
+
+            - name: Build Web App
+              run: npm run build
+
+            - name: Sync Capacitor
+              run: npx cap sync android
+
+            - name: Build APK (Androidアプリの生成)
+              working-directory: ./android
+              run: |
+                  chmod +x gradlew
+                  ./gradlew assembleDebug
+
+            - name: Upload APK
+              uses: actions/upload-artifact@v4
+              with:
+                  name: nekofbt
+                  path: android/app/build/outputs/apk/debug/app-debug.apk

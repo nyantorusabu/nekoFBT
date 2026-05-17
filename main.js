@@ -1,6 +1,8 @@
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { Preferences } from '@capacitor/preferences';
-import { Udp as UdpPlugin } from '@frontall/capacitor-udp';
+import { registerPlugin } from '@capacitor/core';
+
+const UdpPlugin = registerPlugin('UdpPlugin');
 
 let poseLandmarker;
 let currentStream;

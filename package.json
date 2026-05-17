@@ -17,6 +17,7 @@
 		"@capacitor/cli": "^8.3.4",
 		"@capacitor/core": "^8.3.4",
 		"@capacitor/preferences": "^8.0.1",
+		"@frontall/capacitor-udp": "^0.3.4",
 		"@mediapipe/tasks-vision": "^0.10.35"
 	}
 }

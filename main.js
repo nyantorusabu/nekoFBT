@@ -58,8 +58,9 @@ mirrorCheckbox.addEventListener('change', (e) => {
 
 // --- 🌟 2. OSC変換＆送信ツール ---
 
-function createOscPositionPacket(trackerId, x, y, z) {
-	const address = `/tracking/trackers/${trackerId}/position`;
+// ★ PositionとRotationの両方を送れるように改良
+function createOscPacket(trackerId, dataType, x, y, z) {
+	const address = `/tracking/trackers/${trackerId}/${dataType}`;
 	const types = ',fff';
 	const align = (len) => Math.ceil((len + 1) / 4) * 4;
 
@@ -75,9 +76,10 @@ function createOscPositionPacket(trackerId, x, y, z) {
 	for (let i = 0; i < types.length; i++)
 		uint8[addressLen + i] = types.charCodeAt(i);
 
+	// エンディアンネスを明示(ビッグエンディアン)
 	view.setFloat32(addressLen + typesLen, x, false);
-	view.setFloat32(addressLen + typesLen + 4, -y, false);
-	view.setFloat32(addressLen + typesLen + 8, -z, false);
+	view.setFloat32(addressLen + typesLen + 4, y, false);
+	view.setFloat32(addressLen + typesLen + 8, z, false);
 
 	let binaryStr = '';
 	for (let i = 0; i < uint8.length; i++)
@@ -98,20 +100,31 @@ function smoothCoordinate(id, x, y, z, strength) {
 	return smoothedData[id];
 }
 
-async function sendToVRChat(trackerId, x, y, z) {
+async function sendToVRChat(trackerId, dataType, x, y, z) {
 	if (!socketId) return;
 
-	const strength = parseInt(smoothingInput.value, 10);
-	const smoothed = smoothCoordinate(trackerId, x, y, z, strength);
-	const base64Data = createOscPositionPacket(
+	let sendX = x,
+		sendY = y,
+		sendZ = z;
+
+	// スムージングはPositionにのみかける（Rotationは今回0固定のため）
+	if (dataType === 'position') {
+		const strength = parseInt(smoothingInput.value, 10);
+		const smoothed = smoothCoordinate(trackerId, x, y, z, strength);
+		sendX = smoothed.x;
+		sendY = smoothed.y;
+		sendZ = smoothed.z;
+	}
+
+	const base64Data = createOscPacket(
 		trackerId,
-		smoothed.x,
-		smoothed.y,
-		smoothed.z,
+		dataType,
+		sendX,
+		sendY,
+		sendZ,
 	);
 
 	try {
-		// ★ ここが決定的なバグでした！ `data` ではなく `buffer` に修正！
 		await UdpPlugin.send({
 			socketId: socketId,
 			address: ipAddressInput.value,
@@ -145,7 +158,6 @@ async function populateCameras() {
 	});
 }
 
-// 停止処理（ボタンでToggleするため切り出し）
 function stopCamera() {
 	isRunning = false;
 	if (currentStream) {
@@ -154,8 +166,6 @@ function stopCamera() {
 	}
 	video.srcObject = null;
 	canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-
-	// ボタンを緑色に戻す
 	startButton.innerText = 'Camera Start';
 	startButton.style.backgroundColor = '#4CAF50';
 }
@@ -190,7 +200,6 @@ async function startCamera() {
 		});
 		video.srcObject = currentStream;
 
-		// ボタンを赤色（停止用）に変える
 		startButton.innerText = 'Stop Tracking';
 		startButton.style.backgroundColor = '#f44336';
 
@@ -201,12 +210,10 @@ async function startCamera() {
 	} catch (error) {}
 }
 
-// モデル読み込み＆自動再起動
 async function initOrUpdateModel() {
-	const wasRunning = isRunning; // 今動いているかを記憶
-
+	const wasRunning = isRunning;
 	if (wasRunning) {
-		stopCamera(); // 安全に切り替えるため、一旦カメラを止める
+		stopCamera();
 		startButton.innerText = 'Reloading Model...';
 	}
 
@@ -228,13 +235,11 @@ async function initOrUpdateModel() {
 		});
 	}
 
-	if (wasRunning) {
-		await startCamera(); // モデル更新が終わったら自動で再開！
-	}
+	if (wasRunning) await startCamera();
 }
 
 async function predictWebcam() {
-	if (!isRunning) return; // 停止時はループを終わらせる
+	if (!isRunning) return;
 	window.requestAnimationFrame(predictWebcam);
 
 	let now = performance.now();
@@ -272,20 +277,51 @@ async function predictWebcam() {
 			}
 
 			const world = results.worldLandmarks[0];
-			const hipX = (world[23].x + world[24].x) / 2;
-			const hipY = (world[23].y + world[24].y) / 2;
-			const hipZ = (world[23].z + world[24].z) / 2;
 
-			sendToVRChat(1, hipX, hipY, hipZ);
-			sendToVRChat(2, world[27].x, world[27].y, world[27].z);
-			sendToVRChat(3, world[28].x, world[28].y, world[28].z);
+			// ★ トラッカーを地面に立たせるための高さ補正 ★
+			// 足首（27か28）のうち、画面下側（Yが最大）のものを「地面(Y=0)」と定義する
+			const lowestY = Math.max(world[27].y, world[28].y);
+
+			// MediaPipe空間をVRChat(Unity)空間に変換
+			const toUnity = (point) => {
+				return {
+					x: point.x, // Xはそのまま（右が正）
+					y: lowestY - point.y, // 地面を0として、上向きに高さを出す（床めり込み防止）
+					z: -point.z, // 手前/奥の反転
+				};
+			};
+
+			// 1: 腰 (Hip)
+			const hipCenter = {
+				x: (world[23].x + world[24].x) / 2,
+				y: (world[23].y + world[24].y) / 2,
+				z: (world[23].z + world[24].z) / 2,
+			};
+			const hipU = toUnity(hipCenter);
+			sendToVRChat(1, 'position', hipU.x, hipU.y, hipU.z);
+			sendToVRChat(1, 'rotation', 0, 0, 0); // VRChat必須データ
+
+			// 2: 左足首
+			const leftFootU = toUnity(world[27]);
+			sendToVRChat(2, 'position', leftFootU.x, leftFootU.y, leftFootU.z);
+			sendToVRChat(2, 'rotation', 0, 0, 0);
+
+			// 3: 右足首
+			const rightFootU = toUnity(world[28]);
+			sendToVRChat(
+				3,
+				'position',
+				rightFootU.x,
+				rightFootU.y,
+				rightFootU.z,
+			);
+			sendToVRChat(3, 'rotation', 0, 0, 0);
 		}
 	} catch (error) {}
 }
 
 // --- イベントリスナー ---
 
-// ボタンを押した時のToggle（切り替え）処理
 startButton.addEventListener('click', () => {
 	if (isRunning) stopCamera();
 	else startCamera();

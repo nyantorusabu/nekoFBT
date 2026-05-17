@@ -25,6 +25,21 @@ const fpsLimitInput = document.getElementById('fpsLimit');
 const ipAddressInput = document.getElementById('ipAddress');
 const smoothingInput = document.getElementById('smoothing');
 
+// --- 🌟 0. 画面上にエラーを表示するデバッグパネルを作成 ---
+const logDiv = document.createElement('div');
+logDiv.style.cssText =
+	'position:absolute; bottom:0; left:0; width:100%; height:120px; overflow-y:scroll; background:rgba(0,0,0,0.8); color:lime; font-size:12px; padding:8px; z-index:9999; pointer-events:none;';
+document.body.appendChild(logDiv);
+
+function logDebug(msg) {
+	logDiv.innerHTML += `<div>[Log] ${msg}</div>`;
+	logDiv.scrollTop = logDiv.scrollHeight;
+}
+function logError(msg) {
+	logDiv.innerHTML += `<div style="color:red; font-weight:bold;">[Err] ${msg}</div>`;
+	logDiv.scrollTop = logDiv.scrollHeight;
+}
+
 // --- 🌟 1. 設定の自動保存＆読み込み機能 ---
 
 async function loadSettings() {
@@ -58,7 +73,6 @@ mirrorCheckbox.addEventListener('change', (e) => {
 
 // --- 🌟 2. OSC変換＆送信ツール ---
 
-// ★ PositionとRotationの両方を送れるように改良
 function createOscPacket(trackerId, dataType, x, y, z) {
 	const address = `/tracking/trackers/${trackerId}/${dataType}`;
 	const types = ',fff';
@@ -76,7 +90,7 @@ function createOscPacket(trackerId, dataType, x, y, z) {
 	for (let i = 0; i < types.length; i++)
 		uint8[addressLen + i] = types.charCodeAt(i);
 
-	// エンディアンネスを明示(ビッグエンディアン)
+	// OSC仕様に則り、ビッグエンディアン（false）で書き込む
 	view.setFloat32(addressLen + typesLen, x, false);
 	view.setFloat32(addressLen + typesLen + 4, y, false);
 	view.setFloat32(addressLen + typesLen + 8, z, false);
@@ -84,7 +98,7 @@ function createOscPacket(trackerId, dataType, x, y, z) {
 	let binaryStr = '';
 	for (let i = 0; i < uint8.length; i++)
 		binaryStr += String.fromCharCode(uint8[i]);
-	return btoa(binaryStr);
+	return btoa(binaryStr); // バイナリをBase64文字列に変換
 }
 
 let smoothedData = {};
@@ -106,8 +120,6 @@ async function sendToVRChat(trackerId, dataType, x, y, z) {
 	let sendX = x,
 		sendY = y,
 		sendZ = z;
-
-	// スムージングはPositionにのみかける（Rotationは今回0固定のため）
 	if (dataType === 'position') {
 		const strength = parseInt(smoothingInput.value, 10);
 		const smoothed = smoothCoordinate(trackerId, x, y, z, strength);
@@ -129,9 +141,13 @@ async function sendToVRChat(trackerId, dataType, x, y, z) {
 			socketId: socketId,
 			address: ipAddressInput.value,
 			port: 9000,
+			// プラグインの仕様揺れに対応するため、両方のパラメータにセットして投げ込みます
 			buffer: base64Data,
+			data: base64Data,
 		});
-	} catch (e) {}
+	} catch (e) {
+		logError('Send Failed: ' + JSON.stringify(e));
+	}
 }
 
 // --- 🌟 3. カメラとAIのメイン処理 ---
@@ -168,6 +184,7 @@ function stopCamera() {
 	canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 	startButton.innerText = 'Camera Start';
 	startButton.style.backgroundColor = '#4CAF50';
+	logDebug('Tracking Stopped.');
 }
 
 async function startCamera() {
@@ -178,14 +195,17 @@ async function startCamera() {
 
 	if (!socketId) {
 		try {
+			logDebug('Creating UDP Socket...');
 			const result = await UdpPlugin.create();
 			socketId = result.socketId;
-			await UdpPlugin.bind({
-				socketId: socketId,
-				address: '0.0.0.0',
-				port: 0,
-			});
-		} catch (e) {}
+			logDebug('Socket ID: ' + socketId);
+
+			// ★ プラグインがエラーを吐きやすい「address」指定を削除し、ポート自動割り当てのみに変更
+			await UdpPlugin.bind({ socketId: socketId, port: 0 });
+			logDebug('UDP Bound Successfully!');
+		} catch (e) {
+			logError('UDP Bind Error: ' + JSON.stringify(e));
+		}
 	}
 
 	if (currentStream)
@@ -207,7 +227,9 @@ async function startCamera() {
 			isRunning = true;
 			predictWebcam();
 		}
-	} catch (error) {}
+	} catch (error) {
+		logError('Camera Error: ' + error.message);
+	}
 }
 
 async function initOrUpdateModel() {
@@ -221,6 +243,7 @@ async function initOrUpdateModel() {
 	const modelUrl = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${level}/float16/1/pose_landmarker_${level}.task`;
 
 	if (!poseLandmarker) {
+		logDebug('Downloading AI Model...');
 		const vision = await FilesetResolver.forVisionTasks(
 			'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
 		);
@@ -229,10 +252,12 @@ async function initOrUpdateModel() {
 			runningMode: 'VIDEO',
 			numPoses: 1,
 		});
+		logDebug('AI Model Ready.');
 	} else {
 		await poseLandmarker.setOptions({
 			baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
 		});
+		logDebug('Model Switched.');
 	}
 
 	if (wasRunning) await startCamera();
@@ -255,7 +280,6 @@ async function predictWebcam() {
 
 	try {
 		const results = poseLandmarker.detectForVideo(video, performance.now());
-
 		canvas.width = video.videoWidth;
 		canvas.height = video.videoHeight;
 		canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
@@ -277,36 +301,24 @@ async function predictWebcam() {
 			}
 
 			const world = results.worldLandmarks[0];
-
-			// ★ トラッカーを地面に立たせるための高さ補正 ★
-			// 足首（27か28）のうち、画面下側（Yが最大）のものを「地面(Y=0)」と定義する
 			const lowestY = Math.max(world[27].y, world[28].y);
 
-			// MediaPipe空間をVRChat(Unity)空間に変換
 			const toUnity = (point) => {
-				return {
-					x: point.x, // Xはそのまま（右が正）
-					y: lowestY - point.y, // 地面を0として、上向きに高さを出す（床めり込み防止）
-					z: -point.z, // 手前/奥の反転
-				};
+				return { x: point.x, y: lowestY - point.y, z: -point.z };
 			};
 
-			// 1: 腰 (Hip)
-			const hipCenter = {
+			const hipU = toUnity({
 				x: (world[23].x + world[24].x) / 2,
 				y: (world[23].y + world[24].y) / 2,
 				z: (world[23].z + world[24].z) / 2,
-			};
-			const hipU = toUnity(hipCenter);
+			});
 			sendToVRChat(1, 'position', hipU.x, hipU.y, hipU.z);
-			sendToVRChat(1, 'rotation', 0, 0, 0); // VRChat必須データ
+			sendToVRChat(1, 'rotation', 0, 0, 0);
 
-			// 2: 左足首
 			const leftFootU = toUnity(world[27]);
 			sendToVRChat(2, 'position', leftFootU.x, leftFootU.y, leftFootU.z);
 			sendToVRChat(2, 'rotation', 0, 0, 0);
 
-			// 3: 右足首
 			const rightFootU = toUnity(world[28]);
 			sendToVRChat(
 				3,
@@ -321,12 +333,10 @@ async function predictWebcam() {
 }
 
 // --- イベントリスナー ---
-
 startButton.addEventListener('click', () => {
 	if (isRunning) stopCamera();
 	else startCamera();
 });
-
 modelSelect.addEventListener('change', initOrUpdateModel);
 cameraSelect.addEventListener('change', () => {
 	if (isRunning) startCamera();

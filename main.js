@@ -1,6 +1,9 @@
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { Preferences } from '@capacitor/preferences';
-import { UdpPlugin } from '@frontall/capacitor-udp';
+import { registerPlugin } from '@capacitor/core';
+
+// インストールされたAndroid側のUDP機能を直接呼び出す（元に戻す）
+const UdpPlugin = registerPlugin('UdpPlugin');
 
 let poseLandmarker;
 let currentStream;

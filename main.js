@@ -1,13 +1,13 @@
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { registerPlugin } from '@capacitor/core';
+import { Preferences } from '@capacitor/preferences'; // ★ 自動保存プラグインを追加
 
-// CapacitorのUDPプラグインを呼び出す
 const UdpPlugin = registerPlugin('UdpPlugin');
 
 let poseLandmarker;
 let currentStream;
 let isRunning = false;
-let socketId = null; // UDP通信用のソケットID
+let socketId = null;
 
 let lastFrameTime = 0;
 let lastVideoTime = -1;
@@ -25,66 +25,91 @@ const fpsLimitInput = document.getElementById('fpsLimit');
 const ipAddressInput = document.getElementById('ipAddress');
 const smoothingInput = document.getElementById('smoothing');
 
-// --- 🌟 OSC変換＆送信ツール（自作） ---
+// --- 🌟 1. 設定の自動保存＆読み込み機能 ---
 
-// 1. 文字列と数値をVRChat用のOSCバイナリに変換する関数
+// アプリ起動時に保存された設定を読み込む
+async function loadSettings() {
+	const keys = ['ipAddress', 'fpsLimit', 'smoothing', 'modelSelect'];
+	for (const key of keys) {
+		const { value } = await Preferences.get({ key });
+		if (value !== null) {
+			document.getElementById(key).value = value;
+		}
+	}
+
+	const mirror = await Preferences.get({ key: 'mirrorCheckbox' });
+	if (mirror.value !== null) {
+		mirrorCheckbox.checked = mirror.value === 'true';
+		videoContainer.style.transform = mirrorCheckbox.checked
+			? 'scaleX(-1)'
+			: 'none';
+	}
+}
+
+// 設定が変更されたら保存する関数
+async function saveSetting(key, value) {
+	await Preferences.set({ key, value: String(value) });
+}
+
+// 各入力欄に変更があったら自動保存するイベントを設定
+['ipAddress', 'fpsLimit', 'smoothing', 'modelSelect'].forEach((id) => {
+	document
+		.getElementById(id)
+		.addEventListener('change', (e) => saveSetting(id, e.target.value));
+});
+
+mirrorCheckbox.addEventListener('change', (e) => {
+	saveSetting('mirrorCheckbox', e.target.checked);
+	videoContainer.style.transform = e.target.checked ? 'scaleX(-1)' : 'none';
+});
+
+// --- 🌟 2. OSC変換＆送信ツール ---
+
 function createOscPositionPacket(trackerId, x, y, z) {
 	const address = `/vrc/trackers/${trackerId}/position`;
-	const types = ',fff'; // float（小数）が3つという意味
-	const align = (len) => Math.ceil((len + 1) / 4) * 4; // OSCは4バイト区切りにするルールがある
+	const types = ',fff';
+	const align = (len) => Math.ceil((len + 1) / 4) * 4;
 
 	const addressLen = align(address.length);
 	const typesLen = align(types.length);
-	const totalLen = addressLen + typesLen + 12; // float(4バイト) × 3 = 12
+	const totalLen = addressLen + typesLen + 12;
 
 	const buffer = new ArrayBuffer(totalLen);
 	const view = new DataView(buffer);
 	const uint8 = new Uint8Array(buffer);
 
-	// アドレスと型をバイナリに書き込む
 	for (let i = 0; i < address.length; i++) uint8[i] = address.charCodeAt(i);
 	for (let i = 0; i < types.length; i++)
 		uint8[addressLen + i] = types.charCodeAt(i);
 
-	// X, Y, Zの座標データを書き込む（VRChatに合わせてYとZの向きを調整）
 	view.setFloat32(addressLen + typesLen, x, false);
-	view.setFloat32(addressLen + typesLen + 4, -y, false); // 上下反転
-	view.setFloat32(addressLen + typesLen + 8, -z, false); // 前後反転
+	view.setFloat32(addressLen + typesLen + 4, -y, false);
+	view.setFloat32(addressLen + typesLen + 8, -z, false);
 
-	// UDPプラグインで送れるようにBase64文字列に変換して返す
 	let binaryStr = '';
 	for (let i = 0; i < uint8.length; i++)
 		binaryStr += String.fromCharCode(uint8[i]);
 	return btoa(binaryStr);
 }
 
-// 2. スムージング（カクつき防止）処理
 let smoothedData = {};
 function smoothCoordinate(id, x, y, z, strength) {
-	// strengthは 0(補正なし) 〜 100(動かない) の割合
 	const factor = strength / 100;
-
 	if (!smoothedData[id]) {
 		smoothedData[id] = { x, y, z };
 		return { x, y, z };
 	}
-
-	// 前回までの位置に、新しい位置を少しだけブレンドする（移動平均）
 	smoothedData[id].x = smoothedData[id].x * factor + x * (1 - factor);
 	smoothedData[id].y = smoothedData[id].y * factor + y * (1 - factor);
 	smoothedData[id].z = smoothedData[id].z * factor + z * (1 - factor);
 	return smoothedData[id];
 }
 
-// 3. 実際にUDPで送信する関数
 async function sendToVRChat(trackerId, x, y, z) {
-	if (!socketId) return; // ソケットが無ければ何もしない
+	if (!socketId) return;
 
-	// スムージングを適用
 	const strength = parseInt(smoothingInput.value, 10);
 	const smoothed = smoothCoordinate(trackerId, x, y, z, strength);
-
-	// バイナリデータを作成
 	const base64Data = createOscPositionPacket(
 		trackerId,
 		smoothed.x,
@@ -96,19 +121,15 @@ async function sendToVRChat(trackerId, x, y, z) {
 		await UdpPlugin.send({
 			socketId: socketId,
 			address: ipAddressInput.value,
-			port: 9000, // VRChatのOSC受信ポート
+			port: 9000,
 			data: base64Data,
 		});
 	} catch (e) {
-		// 開発中（ブラウザ上）はUDP通信できないためエラーを無視する
+		// 開発中のエラー無視
 	}
 }
 
-// --- 終了 ---
-
-mirrorCheckbox.addEventListener('change', (e) => {
-	videoContainer.style.transform = e.target.checked ? 'scaleX(-1)' : 'none';
-});
+// --- 🌟 3. カメラとAIのメイン処理 ---
 
 async function populateCameras() {
 	try {
@@ -116,9 +137,7 @@ async function populateCameras() {
 			video: true,
 		});
 		tempStream.getTracks().forEach((track) => track.stop());
-	} catch (e) {
-		console.warn('カメラ許可待ち');
-	}
+	} catch (e) {}
 
 	const devices = await navigator.mediaDevices.enumerateDevices();
 	const videoDevices = devices.filter(
@@ -136,7 +155,7 @@ async function populateCameras() {
 
 async function initOrUpdateModel() {
 	const level = modelSelect.value;
-	const modelUrl = `./pose_landmarker_${level}.task`;
+	const modelUrl = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${level}/float16/1/pose_landmarker_${level}.task`;
 
 	if (!poseLandmarker) {
 		const vision = await FilesetResolver.forVisionTasks(
@@ -160,15 +179,21 @@ async function startCamera() {
 		return;
 	}
 
-	// ★ UDP通信の準備（スマホ上で動いた時だけソケットを作る）
+	// ★ UDP通信の準備（バグ修正箇所！）
 	if (!socketId) {
 		try {
 			const result = await UdpPlugin.create();
 			socketId = result.socketId;
+			// ▼ これが抜けていたため、データが送信されていませんでした！
+			// 「アドレス0.0.0.0（自分自身）、ポート0（OSの自動割り当て）」で送信用の口を開く
+			await UdpPlugin.bind({
+				socketId: socketId,
+				address: '0.0.0.0',
+				port: 0,
+			});
+			console.log('UDP送信準備完了');
 		} catch (e) {
-			console.log(
-				'ブラウザ環境のためUDPソケットは作成されません（スマホでのみ動作）',
-			);
+			console.log('PCブラウザ環境のためUDPはスキップ');
 		}
 	}
 
@@ -190,9 +215,7 @@ async function startCamera() {
 		}
 		startButton.disabled = true;
 		startButton.innerText = 'Tracking';
-	} catch (error) {
-		console.error('カメラエラー:', error);
-	}
+	} catch (error) {}
 }
 
 async function predictWebcam() {
@@ -217,7 +240,6 @@ async function predictWebcam() {
 		canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
 		if (results.landmarks && results.worldLandmarks) {
-			// 画面上の2D赤い点描画
 			for (const landmark of results.landmarks) {
 				for (const point of landmark) {
 					canvasCtx.beginPath();
@@ -233,19 +255,13 @@ async function predictWebcam() {
 				}
 			}
 
-			// ★ VRChatへのデータ送信（3D空間座標）
 			const world = results.worldLandmarks[0];
-
-			// トラッカー1: 腰 (左右のHipの中間点)
 			const hipX = (world[23].x + world[24].x) / 2;
 			const hipY = (world[23].y + world[24].y) / 2;
 			const hipZ = (world[23].z + world[24].z) / 2;
+
 			sendToVRChat(1, hipX, hipY, hipZ);
-
-			// トラッカー2: 左足首
 			sendToVRChat(2, world[27].x, world[27].y, world[27].z);
-
-			// トラッカー3: 右足首
 			sendToVRChat(3, world[28].x, world[28].y, world[28].z);
 		}
 	} catch (error) {}
@@ -257,5 +273,8 @@ cameraSelect.addEventListener('change', () => {
 	if (isRunning) startCamera();
 });
 
-populateCameras();
-initOrUpdateModel();
+// アプリ起動時にまずは設定を読み込んでから準備を開始する
+loadSettings().then(() => {
+	populateCameras();
+	initOrUpdateModel();
+});

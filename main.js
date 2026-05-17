@@ -1,16 +1,15 @@
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { Preferences } from '@capacitor/preferences';
-import { registerPlugin } from '@capacitor/core';
-
-const UdpPlugin = registerPlugin('UdpPlugin');
+import { CapacitorHttp } from '@capacitor/core'; // ★ Google公式の確実なHTTP機能を使用
 
 let poseLandmarker;
 let currentStream;
 let isRunning = false;
-let socketId = null;
 
 let lastFrameTime = 0;
 let lastVideoTime = -1;
+
+// ※ socketId は不要になるため削除します
 
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output_canvas');
@@ -25,7 +24,7 @@ const fpsLimitInput = document.getElementById('fpsLimit');
 const ipAddressInput = document.getElementById('ipAddress');
 const smoothingInput = document.getElementById('smoothing');
 
-// --- 🌟 0. 画面上にエラーを表示するデバッグパネルを作成 ---
+// --- 🌟 デバッグパネル ---
 const logDiv = document.createElement('div');
 logDiv.style.cssText =
 	'position:absolute; bottom:0; left:0; width:100%; height:120px; overflow-y:scroll; background:rgba(0,0,0,0.8); color:lime; font-size:12px; padding:8px; z-index:9999; pointer-events:none;';
@@ -40,8 +39,7 @@ function logError(msg) {
 	logDiv.scrollTop = logDiv.scrollHeight;
 }
 
-// --- 🌟 1. 設定の自動保存＆読み込み機能 ---
-
+// --- 🌟 1. 設定の自動保存＆読み込み機能（変更なし） ---
 async function loadSettings() {
 	const keys = ['ipAddress', 'fpsLimit', 'smoothing', 'modelSelect'];
 	for (const key of keys) {
@@ -71,7 +69,7 @@ mirrorCheckbox.addEventListener('change', (e) => {
 	videoContainer.style.transform = e.target.checked ? 'scaleX(-1)' : 'none';
 });
 
-// --- 🌟 2. OSC変換＆送信ツール ---
+// --- 🌟 2. OSC変換＆HTTP送信ツール（ここを改良） ---
 
 function createOscPacket(trackerId, dataType, x, y, z) {
 	const address = `/tracking/trackers/${trackerId}/${dataType}`;
@@ -90,7 +88,6 @@ function createOscPacket(trackerId, dataType, x, y, z) {
 	for (let i = 0; i < types.length; i++)
 		uint8[addressLen + i] = types.charCodeAt(i);
 
-	// OSC仕様に則り、ビッグエンディアン（false）で書き込む
 	view.setFloat32(addressLen + typesLen, x, false);
 	view.setFloat32(addressLen + typesLen + 4, y, false);
 	view.setFloat32(addressLen + typesLen + 8, z, false);
@@ -98,7 +95,7 @@ function createOscPacket(trackerId, dataType, x, y, z) {
 	let binaryStr = '';
 	for (let i = 0; i < uint8.length; i++)
 		binaryStr += String.fromCharCode(uint8[i]);
-	return btoa(binaryStr); // バイナリをBase64文字列に変換
+	return btoa(binaryStr);
 }
 
 let smoothedData = {};
@@ -114,9 +111,8 @@ function smoothCoordinate(id, x, y, z, strength) {
 	return smoothedData[id];
 }
 
+// ★ HTTPポスト経由でVRChatへOSCを直撃させる
 async function sendToVRChat(trackerId, dataType, x, y, z) {
-	if (!socketId) return;
-
 	let sendX = x,
 		sendY = y,
 		sendZ = z;
@@ -137,20 +133,18 @@ async function sendToVRChat(trackerId, dataType, x, y, z) {
 	);
 
 	try {
-		await UdpPlugin.send({
-			socketId: socketId,
-			address: ipAddressInput.value,
-			port: 9000,
-			// プラグインの仕様揺れに対応するため、両方のパラメータにセットして投げ込みます
-			buffer: base64Data,
-			data: base64Data,
+		// VRChatのHTTP OSCエンドポイントへ送信
+		await CapacitorHttp.post({
+			url: `http://${ipAddressInput.value}:9000/`,
+			headers: { 'Content-Type': 'application/octet-stream' },
+			data: base64Data, // コア機能なのでBase64を自動的にバイナリに変換して投げてくれます
 		});
 	} catch (e) {
-		logError('Send Failed: ' + JSON.stringify(e));
+		logError('HTTP Send Failed: ' + e.message);
 	}
 }
 
-// --- 🌟 3. カメラとAIのメイン処理 ---
+// --- 🌟 3. カメラとAIのメイン処理（変更なし） ---
 
 async function populateCameras() {
 	try {
@@ -191,21 +185,6 @@ async function startCamera() {
 	if (!poseLandmarker) {
 		alert('Loading AI...');
 		return;
-	}
-
-	if (!socketId) {
-		try {
-			logDebug('Creating UDP Socket...');
-			const result = await UdpPlugin.create();
-			socketId = result.socketId;
-			logDebug('Socket ID: ' + socketId);
-
-			// ★ プラグインがエラーを吐きやすい「address」指定を削除し、ポート自動割り当てのみに変更
-			await UdpPlugin.bind({ socketId: socketId, port: 0 });
-			logDebug('UDP Bound Successfully!');
-		} catch (e) {
-			logError('UDP Bind Error: ' + JSON.stringify(e));
-		}
 	}
 
 	if (currentStream)
@@ -300,7 +279,7 @@ async function predictWebcam() {
 				}
 			}
 
-			const world = results.worldLandmarks[0];
+			const world = (worldLandmarks = results.worldLandmarks[0]);
 			const lowestY = Math.max(world[27].y, world[28].y);
 
 			const toUnity = (point) => {

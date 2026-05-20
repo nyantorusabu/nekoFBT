@@ -22,13 +22,13 @@ const modelSelect = document.getElementById('modelSelect');
 const mirrorCheckbox = document.getElementById('mirrorCheckbox');
 const fpsLimitInput = document.getElementById('fpsLimit');
 const ipAddressInput = document.getElementById('ipAddress');
-const userHeightInput = document.getElementById('userHeight'); // ★追加
+const userHeightInput = document.getElementById('userHeight');
 const smoothingInput = document.getElementById('smoothing');
 
 // --- 🌟 デバッグパネル ---
 const logDiv = document.createElement('div');
 logDiv.style.cssText =
-	'display:none; position:fixed; bottom:0; left:0; width:100%; height:150px; overflow-y:auto; background:rgba(0,0,0,0.85); color:lime; font-size:12px; padding:8px; z-index:9999; box-sizing:border-box; border-top:2px solid #555;';
+	'display:none; position:fixed; bottom:0; left:0; width:100%; height:200px; overflow-y:auto; background:rgba(0,0,0,0.9); color:lime; font-size:12px; padding:8px; z-index:9999; box-sizing:border-box; border-top:2px solid #555; font-family:monospace;';
 document.body.appendChild(logDiv);
 
 let logCount = 0;
@@ -37,12 +37,37 @@ function logDebug(msg) {
 		logDiv.innerHTML = '';
 		logCount = 0;
 	}
-	logDiv.innerHTML += `<div>[Log] ${msg}</div>`;
+	logDiv.innerHTML += `<div>[INFO] ${msg}</div>`;
 	logDiv.scrollTop = logDiv.scrollHeight;
 	logCount++;
 }
-function logError(msg) {
-	logDiv.innerHTML += `<div style="color:red; font-weight:bold;">[Err] ${msg}</div>`;
+
+// ★修正: エラーを骨の髄まで詳細に表示する強化版エラーハンドラー
+function logError(msg, err = null) {
+	let detailedMsg = `<div style="color:#ff5555; font-weight:bold; margin-top:8px;">[ERR] ${msg}</div>`;
+	if (err) {
+		// Errorオブジェクトならスタックトレースを、それ以外ならJSONを展開
+		let errStr = '';
+		if (err instanceof Error) {
+			errStr = `Name: ${err.name}\nMessage: ${err.message}\nStack: ${
+				err.stack || 'No stack trace'
+			}`;
+		} else if (typeof err === 'object') {
+			try {
+				errStr = JSON.stringify(
+					err,
+					Object.getOwnPropertyNames(err),
+					2,
+				);
+			} catch (e) {
+				errStr = String(err);
+			}
+		} else {
+			errStr = String(err);
+		}
+		detailedMsg += `<div style="color:#ffaaaa; white-space:pre-wrap; background:rgba(255,0,0,0.15); padding:6px; border-left:3px solid #ff0000; margin-bottom:8px; word-wrap:break-word;">${errStr}</div>`;
+	}
+	logDiv.innerHTML += detailedMsg;
 	logDiv.scrollTop = logDiv.scrollHeight;
 }
 
@@ -50,9 +75,18 @@ toggleLogButton.addEventListener('click', () => {
 	logDiv.style.display = logDiv.style.display === 'none' ? 'block' : 'none';
 });
 
-// --- 🌟 1. UDP初期化 ---
+// --- 🌟 1. UDP初期化（クリーンアップ強化） ---
 async function initUdp() {
 	try {
+		logDebug('Initializing UDP Socket...');
+		// 既存のソケットがあれば確実に閉じてゾンビ化を防ぐ
+		if (socketId !== null) {
+			try {
+				await UdpSocket.close({ socketId: socketId });
+			} catch (e) {}
+			socketId = null;
+		}
+
 		const info = await UdpSocket.create();
 		socketId = info.socketId;
 		await UdpSocket.bind({
@@ -62,35 +96,42 @@ async function initUdp() {
 		});
 		logDebug('UDP Socket Ready: ' + socketId);
 	} catch (e) {
-		logError('UDP Init Failed: ' + e.message);
+		logError('UDP Init Failed', e); // ★ エラー詳細を渡す
 	}
 }
 
 // --- 🌟 2. 設定の自動保存＆読み込み機能 ---
 async function loadSettings() {
-	// userHeight を追加
-	const keys = [
-		'ipAddress',
-		'fpsLimit',
-		'smoothing',
-		'modelSelect',
-		'userHeight',
-	];
-	for (const key of keys) {
-		const { value } = await Preferences.get({ key });
-		if (value !== null) document.getElementById(key).value = value;
-	}
-	const mirror = await Preferences.get({ key: 'mirrorCheckbox' });
-	if (mirror.value !== null) {
-		mirrorCheckbox.checked = mirror.value === 'true';
-		videoContainer.style.transform = mirrorCheckbox.checked
-			? 'scaleX(-1)'
-			: 'none';
+	try {
+		const keys = [
+			'ipAddress',
+			'fpsLimit',
+			'smoothing',
+			'modelSelect',
+			'userHeight',
+		];
+		for (const key of keys) {
+			const { value } = await Preferences.get({ key });
+			if (value !== null) document.getElementById(key).value = value;
+		}
+		const mirror = await Preferences.get({ key: 'mirrorCheckbox' });
+		if (mirror.value !== null) {
+			mirrorCheckbox.checked = mirror.value === 'true';
+			videoContainer.style.transform = mirrorCheckbox.checked
+				? 'scaleX(-1)'
+				: 'none';
+		}
+	} catch (e) {
+		logError('Settings Load Failed', e);
 	}
 }
 
 async function saveSetting(key, value) {
-	await Preferences.set({ key, value: String(value) });
+	try {
+		await Preferences.set({ key, value: String(value) });
+	} catch (e) {
+		logError(`Failed to save setting [${key}]`, e);
+	}
 }
 
 ['ipAddress', 'fpsLimit', 'smoothing', 'modelSelect', 'userHeight'].forEach(
@@ -132,7 +173,6 @@ function getOscBase64Fast(trackerId, dataType, x, y, z) {
 	}
 
 	const cache = oscCache[key];
-	// ★ 回転データも毎フレーム動的に上書きするように変更
 	cache.view.setFloat32(cache.offset, x, false);
 	cache.view.setFloat32(cache.offset + 4, y, false);
 	cache.view.setFloat32(cache.offset + 8, z, false);
@@ -148,7 +188,6 @@ function smoothCoordinate(id, x, y, z, strength, isRotation = false) {
 	}
 
 	if (isRotation) {
-		// 回転用の特殊スムージング（-180度から180度への急激なジャンプを防ぐ最短距離補間）
 		const lerpAngle = (a, b, t) => {
 			let diff = b - a;
 			while (diff < -180) diff += 360;
@@ -159,7 +198,6 @@ function smoothCoordinate(id, x, y, z, strength, isRotation = false) {
 		smoothedData[id].y = lerpAngle(smoothedData[id].y, y, 1 - factor);
 		smoothedData[id].z = lerpAngle(smoothedData[id].z, z, 1 - factor);
 	} else {
-		// 座標用の通常スムージング
 		smoothedData[id].x = smoothedData[id].x * factor + x * (1 - factor);
 		smoothedData[id].y = smoothedData[id].y * factor + y * (1 - factor);
 		smoothedData[id].z = smoothedData[id].z * factor + z * (1 - factor);
@@ -172,7 +210,6 @@ let udpErrorCount = 0;
 async function sendToVRChat(trackerId, dataType, x, y, z) {
 	if (!socketId) return;
 
-	// ★ 座標と回転のどちらもスムージングを適用する
 	const strength = parseInt(smoothingInput.value, 10);
 	const smoothed = smoothCoordinate(
 		`${trackerId}_${dataType}`,
@@ -182,7 +219,6 @@ async function sendToVRChat(trackerId, dataType, x, y, z) {
 		strength,
 		dataType === 'rotation',
 	);
-
 	const base64Data = getOscBase64Fast(
 		trackerId,
 		dataType,
@@ -201,10 +237,13 @@ async function sendToVRChat(trackerId, dataType, x, y, z) {
 		udpErrorCount = 0;
 	} catch (e) {
 		if (udpErrorCount < 5) {
-			logError(`UDP Error: ${e.message}`);
+			logError(`UDP Error (Tracker ${trackerId} ${dataType})`, e); // ★ 詳細表示
 			udpErrorCount++;
 			if (udpErrorCount === 5)
-				logError('Too many UDP errors. Suppressing further logs.');
+				logError(
+					'Too many UDP errors. Suppressing further network logs.',
+					null,
+				);
 		}
 	}
 }
@@ -217,20 +256,26 @@ async function populateCameras() {
 			video: true,
 		});
 		tempStream.getTracks().forEach((track) => track.stop());
-	} catch (e) {}
+	} catch (e) {
+		logError('Camera permission check failed', e);
+	}
 
-	const devices = await navigator.mediaDevices.enumerateDevices();
-	const videoDevices = devices.filter(
-		(device) => device.kind === 'videoinput',
-	);
+	try {
+		const devices = await navigator.mediaDevices.enumerateDevices();
+		const videoDevices = devices.filter(
+			(device) => device.kind === 'videoinput',
+		);
 
-	cameraSelect.innerHTML = '';
-	videoDevices.forEach((device, index) => {
-		const option = document.createElement('option');
-		option.value = device.deviceId;
-		option.text = device.label || `Camera ${index + 1}`;
-		cameraSelect.appendChild(option);
-	});
+		cameraSelect.innerHTML = '';
+		videoDevices.forEach((device, index) => {
+			const option = document.createElement('option');
+			option.value = device.deviceId;
+			option.text = device.label || `Camera ${index + 1}`;
+			cameraSelect.appendChild(option);
+		});
+	} catch (e) {
+		logError('Failed to list cameras', e);
+	}
 }
 
 function stopCamera() {
@@ -248,7 +293,7 @@ function stopCamera() {
 
 async function startCamera() {
 	if (!poseLandmarker) {
-		alert('Loading AI...');
+		alert('Loading AI... Please wait.');
 		return;
 	}
 
@@ -259,8 +304,8 @@ async function startCamera() {
 	try {
 		currentStream = await navigator.mediaDevices.getUserMedia({
 			video: deviceId
-				? { deviceId: { exact: deviceId } }
-				: { facingMode: 'environment' },
+				? { deviceId: { exact: deviceId }, width: 640, height: 480 }
+				: { facingMode: 'environment', width: 640, height: 480 },
 		});
 		video.srcObject = currentStream;
 
@@ -272,7 +317,7 @@ async function startCamera() {
 			predictWebcam();
 		}
 	} catch (error) {
-		logError('Camera Error: ' + error.message);
+		logError('Camera Start Error', error);
 	}
 }
 
@@ -287,29 +332,31 @@ async function initOrUpdateModel() {
 	const modelUrl = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${level}/float16/1/pose_landmarker_${level}.task`;
 
 	try {
-		if (!poseLandmarker) {
-			logDebug(`Downloading AI Model (${level})...`);
-			const vision = await FilesetResolver.forVisionTasks(
-				'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
-			);
-			poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-				baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
-				runningMode: 'VIDEO',
-				numPoses: 1,
-			});
-			logDebug('AI Model Ready.');
-		} else {
-			await poseLandmarker.setOptions({
-				baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
-			});
-			logDebug('Model Switched.');
+		// ★修正: メモリリーク防止（既存モデルの確実な破棄）
+		if (poseLandmarker) {
+			logDebug('Disposing previous AI model to free memory...');
+			poseLandmarker.close();
+			poseLandmarker = null;
 		}
+
+		logDebug(`Downloading AI Model (${level})...`);
+		const vision = await FilesetResolver.forVisionTasks(
+			'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
+		);
+		poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+			baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
+			runningMode: 'VIDEO',
+			numPoses: 1,
+		});
+		logDebug(`AI Model [${level}] Ready.`);
 	} catch (error) {
-		logError('AI Load Failed: ' + error.message);
+		logError('AI Initialization Failed', error);
 	}
 
 	if (wasRunning) await startCamera();
 }
+
+let aiErrorCount = 0;
 
 async function predictWebcam() {
 	if (!isRunning) return;
@@ -331,8 +378,13 @@ async function predictWebcam() {
 		canvas.width = video.videoWidth;
 		canvas.height = video.videoHeight;
 		canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+		aiErrorCount = 0; // 成功時はエラーカウンタリセット
 
-		if (results.landmarks && results.worldLandmarks) {
+		if (
+			results.landmarks &&
+			results.worldLandmarks &&
+			results.worldLandmarks.length > 0
+		) {
 			for (const landmark of results.landmarks) {
 				for (const point of landmark) {
 					canvasCtx.beginPath();
@@ -349,11 +401,8 @@ async function predictWebcam() {
 			}
 
 			const world = results.worldLandmarks[0];
-
-			// === ★ 追加：ユーザーの身長に基づくスケール補正 ===
 			const userHeightM =
 				(parseFloat(userHeightInput.value) || 160) / 100;
-			// 足首(27,28)、かかと(29,30)、つま先(31,32)の中から最も低い位置(地面)を取得
 			const lowestY = Math.max(
 				world[27].y,
 				world[28].y,
@@ -362,7 +411,6 @@ async function predictWebcam() {
 				world[31].y,
 				world[32].y,
 			);
-			// 頭頂部付近のノード(0,1,2,7,8)から最も高い位置を取得
 			const highestY = Math.min(
 				world[0].y,
 				world[1].y,
@@ -372,13 +420,9 @@ async function predictWebcam() {
 			);
 			const detectedHeight = lowestY - highestY;
 
-			// AIが認識した「頭から足先までの高さ」と「現実の身長」の比率を割り出す
 			let scale = 1.0;
-			if (detectedHeight > 0.5) {
-				scale = userHeightM / detectedHeight;
-			}
+			if (detectedHeight > 0.5) scale = userHeightM / detectedHeight;
 
-			// AIの座標をUnity空間(メートル単位)にスケール変換
 			const toUnity = (point) => {
 				return {
 					x: point.x * scale,
@@ -387,7 +431,6 @@ async function predictWebcam() {
 				};
 			};
 
-			// 各関節の変換座標を取得
 			const uHipL = toUnity(world[23]),
 				uHipR = toUnity(world[24]);
 			const uShoulderL = toUnity(world[11]),
@@ -403,8 +446,6 @@ async function predictWebcam() {
 				z: (uShoulderL.z + uShoulderR.z) / 2,
 			};
 
-			// === 🐾 Tracker 1: 腰 (Hip) ===
-			// 左右の腰骨の傾きからYaw(左右の回転)を、背骨の傾きからPitch(前後)とRoll(左右の傾げ)を算出
 			const hipYaw =
 				Math.atan2(uHipR.x - uHipL.x, uHipR.z - uHipL.z) *
 					(180 / Math.PI) -
@@ -424,7 +465,6 @@ async function predictWebcam() {
 			sendToVRChat(1, 'position', uMidHip.x, uMidHip.y, uMidHip.z);
 			sendToVRChat(1, 'rotation', hipPitch, hipYaw, hipRoll);
 
-			// === 足の回転計算ヘルパー ===
 			const calcFootRot = (heel, toe) => {
 				const dx = toe.x - heel.x,
 					dy = toe.y - heel.y,
@@ -436,7 +476,6 @@ async function predictWebcam() {
 				return { pitch, yaw, roll: 0 };
 			};
 
-			// === 🐾 Tracker 2: 左足 (Left Foot) ===
 			const uLeftAnkle = toUnity(world[27]);
 			const uLeftHeel = toUnity(world[29]),
 				uLeftToe = toUnity(world[31]);
@@ -456,7 +495,6 @@ async function predictWebcam() {
 				leftRot.roll,
 			);
 
-			// === 🐾 Tracker 3: 右足 (Right Foot) ===
 			const uRightAnkle = toUnity(world[28]);
 			const uRightHeel = toUnity(world[30]),
 				uRightToe = toUnity(world[32]);
@@ -476,7 +514,18 @@ async function predictWebcam() {
 				rightRot.roll,
 			);
 		}
-	} catch (error) {}
+	} catch (error) {
+		// ★修正: 今まで握りつぶされていたAIエラーをキャッチして表示
+		if (aiErrorCount < 5) {
+			logError('AI Prediction Process Error', error);
+			aiErrorCount++;
+			if (aiErrorCount === 5)
+				logError(
+					'Too many AI errors. Suppressing further prediction logs.',
+					null,
+				);
+		}
+	}
 }
 
 // --- イベントリスナー初期化 ---
@@ -489,6 +538,7 @@ cameraSelect.addEventListener('change', () => {
 	if (isRunning) startCamera();
 });
 
+// アプリ起動シーケンス
 initUdp().then(() => {
 	loadSettings().then(() => {
 		populateCameras();

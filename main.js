@@ -79,6 +79,7 @@ toggleLogButton.addEventListener('click', () => {
 async function initUdp() {
 	try {
 		logDebug('Initializing UDP Socket...');
+
 		// 既存のソケットがあれば確実に閉じてゾンビ化を防ぐ
 		if (socketId !== null) {
 			try {
@@ -87,16 +88,27 @@ async function initUdp() {
 			socketId = null;
 		}
 
-		const info = await UdpSocket.create();
+		// ★修正: 公式仕様に合わせた引数構造
+		// 空でもよいので properties を明示的に渡さないとJava側でNullエラー(create error)が起きます
+		const info = await UdpSocket.create({
+			properties: {
+				name: 'nekoFBT-osc',
+				bufferSize: 4096,
+			},
+		});
+
 		socketId = info.socketId;
+
+		// ★修正: バインド時の引数も公式仕様に準拠
 		await UdpSocket.bind({
 			socketId: socketId,
 			address: '0.0.0.0',
 			port: 0,
 		});
+
 		logDebug('UDP Socket Ready: ' + socketId);
 	} catch (e) {
-		logError('UDP Init Failed', e); // ★ エラー詳細を渡す
+		logError('UDP Init Failed', e);
 	}
 }
 
